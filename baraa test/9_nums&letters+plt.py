@@ -3,7 +3,7 @@ import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
 import os, json, time
 from datetime import datetime
-X_sample =[]
+
 # =========================================================================================================================
 # ====== Misclassification review (drop-in) ===================================
 import matplotlib.pyplot as plt
@@ -27,16 +27,17 @@ def review_misclassified(feature_extractor, classifier, split="train",
         batch_size: forward-pass chunk to avoid RAM drama
         limit: cap number of wrong samples shown/saved (None = show all)
     """
-    X_all, y_all = load_mnist_batch(split=split)
-    N = X_all.shape[0]
+    
+    
+    N = pics.shape[0]
 
     wrong_imgs, wrong_true, wrong_pred, wrong_probs = [], [], [], []
 
     # forward in chunks
     for s in range(0, N, batch_size):
         e = min(s + batch_size, N)
-        Xb = X_all[s:e]
-        yb = y_all[s:e]
+        Xb = pics[s:e]
+        yb = lables[s:e]
 
         feats = feature_extractor.forward(Xb)
         logits = classifier.forward(feats)
@@ -217,9 +218,8 @@ def review_misclassified(feature_extractor, classifier, split="train",
     plt.show()
 
 
-# ====== Easy toggle after training ===========================================
-# Set to True when you want the viewer. False when you don't want to plot.
-ENABLE_MISCLASS_REVIEW = True
+
+
 
 
 
@@ -563,6 +563,9 @@ class Classifier:
     # ---------------- training loop (your proper mini-batch loop) ----------------
         acc , loss=0 ,0
         X_all, y_all = load_mnist_batch(split=split, emnist_split="balanced")  # or "letters"
+        global pics , lables
+        pics , lables = X_all , y_all
+
         N = X_all.shape[0]
 
         for ep in range(epochs):
@@ -612,9 +615,9 @@ def load_mnist_batch(split="train", emnist_split="balanced", cache_root="data"):
     """
     os.makedirs(cache_root, exist_ok=True)
     cache_path = os.path.join(cache_root, f"emnist_{emnist_split}_{split}.npz")
-    if os.path.exists(cache_path):
-        d = np.load(cache_path)
-        return d["X"], d["y"]
+    # if os.path.exists(cache_path):
+    #     d = np.load(cache_path)
+    #     return d["X"], d["y"]
 
     import torch
     from torchvision import datasets, transforms
@@ -622,7 +625,8 @@ def load_mnist_batch(split="train", emnist_split="balanced", cache_root="data"):
     # EMNIST comes rotated/transposed. Fix orientation to normal 28x28.
     def _fix(x):
         # x: [1,28,28] tensor; rotate 90° and flip to upright
-        return x.transpose(1, 2).flip(2)
+        # return x.transpose(1, 2).flip(2)
+        return torch.rot90(x, 3, [1, 2]).flip(2)
 
     tfm = transforms.Compose([transforms.ToTensor(), transforms.Lambda(_fix)])
 
@@ -631,8 +635,34 @@ def load_mnist_batch(split="train", emnist_split="balanced", cache_root="data"):
         split=emnist_split,
         train=(split == "train"),
         download=True,
-        transform=tfm  # typo fixed below, see note
+        transform=tfm
+        
     )
+    def label_to_name(ds, y):
+        # Try to get a human-friendly class name if the dataset provides it.
+        name = str(y)
+        try:
+            # Some torchvision versions expose textual classes; fallback to id.
+            if hasattr(ds, "classes") and len(ds.classes) > int(y):
+                name = str(ds.classes[int(y)])
+        except Exception:
+            pass
+        return name
+    # import random
+    # random.seed(1)
+    # idxs = random.sample(range(len(ds)), 4 * 4)
+    # fig, axes = plt.subplots(4, 4, figsize=(4 * 1.6, 4 * 1.6))
+    # axes = axes.ravel()
+    # for ax, i in zip(axes, idxs):
+    #     x, y = ds[i]                 # x: [1,28,28] tensor in [0,1]
+    #     ax.imshow(x[0].numpy(), cmap="gray", vmin=0, vmax=1)
+    #     ax.set_title(label_to_name(ds, y), fontsize=9)
+    #     ax.axis("off")
+
+    # fig.suptitle(f"EMNIST split={"balanced"}, train={True}, orient={"ROT90_CW_FLIP_H"}", fontsize=12)
+    # plt.tight_layout()
+    # plt.show()
+    
 
     xs = torch.stack([ds[i][0] for i in range(len(ds))], dim=0)  # (N,1,28,28)
     ys = torch.tensor([ds[i][1] for i in range(len(ds))], dtype=torch.long)
@@ -652,8 +682,9 @@ def load_mnist_batch(split="train", emnist_split="balanced", cache_root="data"):
 # Example usage
 # ---------------------
 if __name__ == "__main__":
-    np.random.seed(1)
+    np.random.seed(2)
 
+    
     # Part 1: image processing pipeline
     extractor = FeatureExtractor(lr=0.05)
 
@@ -678,12 +709,14 @@ if __name__ == "__main__":
     )
     save_weights(extractor, cls)
     print("Done.")
-
+    # ====== Easy toggle after training ===========================================
+    # Set to True when you want the viewer. False when you don't want to plot.
+    ENABLE_MISCLASS_REVIEW = True
     if ENABLE_MISCLASS_REVIEW:
         # keep runs tidy if you want files saved too
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         outdir = os.path.join("runs", f"miscls_{ts}")
-        review_misclassified(extractor, cls, split="train", save_dir=outdir, limit=None)
+        review_misclassified(extractor, cls, split="train", save_dir=None, limit=None)
         # and inside review_misclassified:
-        X_all, y_all = load_mnist_batch(split="train", emnist_split="balanced")
+        # X_all, y_all = load_mnist_batch(split="train", emnist_split="balanced")
 
