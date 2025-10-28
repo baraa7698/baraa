@@ -480,6 +480,7 @@ class FeatureExtractor:
         self.pool = MaxPool2x2()                  # 26 -> 13
         self.lr = lr
         self.flat_dim = 8 * 13 * 13
+        #print('features function starting')
 
     def forward(self, x):
         z = self.conv.forward(x)            # (N,8,26,26)
@@ -529,6 +530,7 @@ class Classifier:
         split="test", verbose=True
     ):
         
+        #print('starting the training stage!!!!')
         # ---------------- timing + run folder ----------------       # NEW
         t0 = time.perf_counter()
         run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -562,12 +564,12 @@ class Classifier:
 
     # ---------------- training loop (your proper mini-batch loop) ----------------
         acc , loss=0 ,0
-        X_all, y_all = load_mnist_batch(split=split, emnist_split="balanced")  # or "letters"
+        X_all, y_all = load_mnist_batch(split=split, emnist_split="byclass")  # or "letters"
         global pics , lables
         pics , lables = X_all , y_all
 
         N = X_all.shape[0]
-
+        print('starting the forloop of the training stage!!!')
         for ep in range(epochs):
             perm = np.random.permutation(N)
             X_all = X_all[perm]
@@ -590,8 +592,8 @@ class Classifier:
 
                 pred = logits.argmax(axis=1)
                 acc = np.mean(pred == y)
-                if verbose and (steps // batch_size) % 50 == 0:
-                    print(f"epoch {ep+1:02d}, batch:{steps:05d}/{N:05d}  loss {loss:.3f}  acc {acc*100:5.1f}% ")
+                #if verbose and (steps // batch_size) % 5 == 0:
+                print(f"epoch {ep+1:02d}, batch:{steps:05d}/{N:05d}  loss {loss:.3f}  acc {acc*100:5.1f}% ")
 
         # ---------------- end-of-run logging ----------------       # NEW
         elapsed = time.perf_counter() - t0
@@ -608,7 +610,8 @@ class Classifier:
 # ---------------------
 # Data loader (unchanged logic, grabs a random batch)
 # ---------------------
-def load_mnist_batch(split="train", emnist_split="balanced", cache_root="data"):
+def load_mnist_batch(split="train", emnist_split="byclass", cache_root="data"):
+    
     """
     split: "train" or "test"
     emnist_split: "digits", "letters", "balanced", "byclass", "bymerge", or "mnist"
@@ -618,18 +621,18 @@ def load_mnist_batch(split="train", emnist_split="balanced", cache_root="data"):
     # if os.path.exists(cache_path):
     #     d = np.load(cache_path)
     #     return d["X"], d["y"]
-
+    
     import torch
     from torchvision import datasets, transforms
 
+    #print('starting the load Emnist function!!!')
     # EMNIST comes rotated/transposed. Fix orientation to normal 28x28.
     def _fix(x):
         # x: [1,28,28] tensor; rotate 90° and flip to upright
         # return x.transpose(1, 2).flip(2)
         return torch.rot90(x, 3, [1, 2]).flip(2)
-
     tfm = transforms.Compose([transforms.ToTensor(), transforms.Lambda(_fix)])
-
+    #print('starting the load Emnist function!!!')
     ds = datasets.EMNIST(
         root=cache_root,
         split=emnist_split,
@@ -638,43 +641,101 @@ def load_mnist_batch(split="train", emnist_split="balanced", cache_root="data"):
         transform=tfm
         
     )
-    def label_to_name(ds, y):
-        # Try to get a human-friendly class name if the dataset provides it.
-        name = str(y)
-        try:
-            # Some torchvision versions expose textual classes; fallback to id.
-            if hasattr(ds, "classes") and len(ds.classes) > int(y):
-                name = str(ds.classes[int(y)])
-        except Exception:
-            pass
-        return name
-    # import random
-    # random.seed(1)
-    # idxs = random.sample(range(len(ds)), 4 * 4)
-    # fig, axes = plt.subplots(4, 4, figsize=(4 * 1.6, 4 * 1.6))
-    # axes = axes.ravel()
-    # for ax, i in zip(axes, idxs):
-    #     x, y = ds[i]                 # x: [1,28,28] tensor in [0,1]
-    #     ax.imshow(x[0].numpy(), cmap="gray", vmin=0, vmax=1)
-    #     ax.set_title(label_to_name(ds, y), fontsize=9)
-    #     ax.axis("off")
-
-    # fig.suptitle(f"EMNIST split={"balanced"}, train={True}, orient={"ROT90_CW_FLIP_H"}", fontsize=12)
-    # plt.tight_layout()
-    # plt.show()
+    print('starting the load Emnist function!!! ds stage')
     
+        
 
-    xs = torch.stack([ds[i][0] for i in range(len(ds))], dim=0)  # (N,1,28,28)
-    ys = torch.tensor([ds[i][1] for i in range(len(ds))], dtype=torch.long)
+    #xs = torch.stack([ds[i][0] for i in range(len(ds))], dim=0)  # (N,1,28,28)
+    #ys = torch.tensor([ds[i][1] for i in range(len(ds))], dtype=torch.long)
+    # ===== FAST, LOOP-FREE EMNIST PACK =====
+    import torch
 
-    X = xs.numpy().astype(np.float32)
-    y = ys.numpy().astype(np.int64)
+    def pack_emnist(ds, orient="T_FLIP_H"):
+        """
+        ds: torchvision.datasets.EMNIST
+        Returns X:(N,1,28,28) float32 in [0,1], y:(N,) int64
+        """
+        if not hasattr(ds, "data") or not hasattr(ds, "targets"):
+            # Fallback: still avoid per-item loop — use a DataLoader to batch
+            from torch.utils.data import DataLoader
+            ld = DataLoader(ds, batch_size=8192, shuffle=False, num_workers=2, pin_memory=False)
+            xs, ys = [], []
+            for xb, yb in ld:
+                xs.append(xb)
+                ys.append(yb)
+            X = torch.cat(xs, 0)
+            y = torch.cat(ys, 0).long()
+        else:
+            # FAST path: use the raw tensors provided by the dataset
+            X = ds.data.unsqueeze(1).float().div(255.0)  # (N,1,28,28)
+            y = ds.targets.long()                        # (N,)
+
+        # Orientation (vectorized). Pick one that makes your letters upright.
+        if orient == "T_FLIP_H":                 # transpose then horizontal flip
+            X = X.transpose(2, 3).flip(2)
+        elif orient == "ROT90_CCW_FLIP_H":       # rotate 90° CCW then horizontal flip
+            X = torch.rot90(X, 1, (2, 3)).flip(3)
+        elif orient == "RAW":
+            pass
+        else:
+            X = X.transpose(2, 3).flip(2)        # sane default
+
+        # Shuffle once so the cached order isn’t class-sorted
+        perm = torch.randperm(y.numel())
+        X = X[perm]
+        y = y[perm]
+        return X.numpy().astype("float32"), y.numpy().astype("int64")
+    X, y = pack_emnist(ds, orient="T_FLIP_H")
+
+    #X = xs.numpy().astype(np.float32)
+    #y = ys.numpy().astype(np.int64)
 
     # One shuffle before caching so first use isn’t sorted by class id
     perm = np.random.permutation(len(y))
     X, y = X[perm], y[perm]
 
+
+
+    print('loading the Emnist dataset')
+    # --- EMNIST label mapping (robust) ---
+    def _find_emnist_mapping(root, split):
+        # Try per-split mapping first, then generic mapping.txt, in both project root and user caches.
+        home = os.path.expanduser("~")
+        candidates = [
+            os.path.join(root, "EMNIST", "raw", f"emnist-{split}-mapping.txt"),
+            os.path.join(root, "EMNIST", "raw", "mapping.txt"),
+            os.path.join(home, ".torch", "datasets", "EMNIST", "raw", f"emnist-{split}-mapping.txt"),
+            os.path.join(home, ".torch", "datasets", "EMNIST", "raw", "mapping.txt"),
+            os.path.join(home, ".cache", "torch", "datasets", "EMNIST", "raw", f"emnist-{split}-mapping.txt"),
+            os.path.join(home, ".cache", "torch", "datasets", "EMNIST", "raw", "mapping.txt"),
+        ]
+        for p in candidates:
+            if os.path.exists(p):
+                return p
+        raise FileNotFoundError(
+            "EMNIST mapping file not found in any expected location. "
+            "Run datasets.EMNIST(..., download=True) once and note where it stores raw files."
+        )
+
+    map_path = _find_emnist_mapping(cache_root, emnist_split)   # <-- uses the split you passed ("byclass", "balanced", ...)
+    mapping = dict(np.loadtxt(map_path, dtype=int))
+                # {label_id: ascii_code}
+    '''
+    y_letters = np.array([chr(mapping[int(i)]) for i in y])    # array of characters
+    numberOfPictures =8
+    fig, axes = plt.subplots(numberOfPictures, numberOfPictures, figsize=(numberOfPictures*1.6, numberOfPictures*1.6))
+    
+    for i, ax in enumerate(axes.ravel()):
+        ax.imshow(X[i, 0], cmap="gray", vmin=0, vmax=1)
+        ax.set_title(y_letters[i], fontsize=9)
+        ax.axis("off")
+    fig.suptitle(f"EMNIST split={emnist_split}, train={split=='train'}", fontsize=12)
+    plt.tight_layout()
+    plt.show()
+    '''
+
     np.savez(cache_path, X=X, y=y)
+    print('starting!!!!')
     return X, y
 
 
@@ -682,7 +743,7 @@ def load_mnist_batch(split="train", emnist_split="balanced", cache_root="data"):
 # Example usage
 # ---------------------
 if __name__ == "__main__":
-    np.random.seed(2)
+    
 
     
     # Part 1: image processing pipeline
@@ -692,8 +753,8 @@ if __name__ == "__main__":
     cls = Classifier(
         input_dim=extractor.flat_dim,
         num_classes=62,
-        hidden_dim=628,   # ← adjust this
-        lr=0.01
+        hidden_dim=128,   # ← adjust this
+        lr=0.05
     )
 
     # check and load weights
@@ -703,7 +764,7 @@ if __name__ == "__main__":
     cls.train(
         feature_extractor=extractor,
         epochs=1,        # ← adjust epochs
-        batch_size=300,    # ← adjust batch size
+        batch_size=30,    # ← adjust batch size
         split="train",
         verbose=True
     )
@@ -711,7 +772,7 @@ if __name__ == "__main__":
     print("Done.")
     # ====== Easy toggle after training ===========================================
     # Set to True when you want the viewer. False when you don't want to plot.
-    ENABLE_MISCLASS_REVIEW = True
+    ENABLE_MISCLASS_REVIEW = False
     if ENABLE_MISCLASS_REVIEW:
         # keep runs tidy if you want files saved too
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -719,4 +780,3 @@ if __name__ == "__main__":
         review_misclassified(extractor, cls, split="train", save_dir=None, limit=None)
         # and inside review_misclassified:
         # X_all, y_all = load_mnist_batch(split="train", emnist_split="balanced")
-
